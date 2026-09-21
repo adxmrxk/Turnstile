@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+#
+# turnstilectl -- operator entry point for Turnstile.
+#
+# Subcommand dispatch rather than a wall of flags, because operators reach for
+# this under pressure and `turnstilectl verify` is easier to remember at 3am
+# than a flag combination.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=../scripts/lib/common.sh
+source "${REPO_ROOT}/scripts/lib/common.sh"
+enable_error_trace
+enable_cleanup
+
+readonly VERSION='0.1.0'
+readonly CLASSES="${REPO_ROOT}/target/classes"
+
+usage() {
+  cat <<'USAGE'
+turnstilectl -- operate and audit a Turnstile deployment
+
+Usage: turnstilectl <command> [options]
+
+Commands:
+  simulate    run a contended sale and emit the event log as NDJSON on stdout
+  verify      audit an event log for oversells (reads stdin or -f FILE)
+  prove       simulate and verify in one pipeline, the end-to-end demo
+  test        run the Java suite and the shell suite
+  mutate      break the code on purpose and check the tests notice
+  up          start the server (http://localhost:8080, live seat map)
+  export      print a running server's real event log as NDJSON
+  load        Gatling rush against a fresh server, then audit its log
+  doctor      check that this machine can build and run the project
+  version     print the version
+  help        show this message
+
+Examples:
+  turnstilectl simulate --seats 500 --buyers 5000 > events.ndjson
+  turnstilectl verify -f events.ndjson -s
+  turnstilectl simulate | turnstilectl verify -s
+  turnstilectl prove
+  turnstilectl export | turnstilectl verify -s    # audit a running server
+
+Run `turnstilectl <command> -h` for command-specific options.
+USAGE
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+need_classes() {
+  if [[ ! -d "$CLASSES" ]]; then
+    log_warn "compiled classes not found, building first"
+    (cd "$REPO_ROOT" && mvn -q -B compile) || die "build failed"
+  fi
+}
+
+cmd_simulate() {
+  require_command java mvn
+  need_classes
+  # Diagnostics from the simulator go to stderr, so stdout remains a clean
+  # NDJSON stream safe to pipe straight into the verifier.
+  java -cp "$CLASSES" dev.turnstile.tools.SimulateRun "$@"
+}
+
+cmd_verify() {
+  # Not exec: that replaced the process, so this subcommand alone skipped the
+  # EXIT trap and the shared status handling in main.
+  "${REPO_ROOT}/scripts/verify-invariants.sh" "$@"
+}
+
+cmd_prove() {
+  require_command java mvn awk
+  need_classes
+
+  log_info "running the end-to-end proof"
+  log_info "the simulator and the verifier share no code; if they disagree, the simulator is wrong"
+
+  local log workdir status=0
+  # Not "$(make_temp_dir)": the substitution would run the registration in a
+  # subshell and the directory would outlive the run.
+  make_temp_dir workdir
+  log="${workdir}/events.ndjson"
+
+  # Deliberately not a single pipe: keeping the log on disk means a failure can
+  # be investigated afterwards instead of having scrolled past.
+  cmd_simulate "$@" > "$log"
+
+  "${REPO_ROOT}/scripts/verify-invariants.sh" -s -f "$log" || status=$?
+
+  if [[ $status -ne 0 ]]; then
+    # The log is inside a temp dir the EXIT trap will remove, so preserve it.
+    local kept="${REPO_ROOT}/target/failed-events.ndjson"
+    mkdir -p "$(dirname "$kept")"
+    cp "$log" "$kept"
+    log_error "invariants violated; the offending log is at ${kept}"
+    return "$status"
+  fi
+
+  log_ok "proof complete: the log contains no oversell"
+}
+
+cmd_test() {
+  local failed=0
+
+  log_info "running the Java suite"
+  (cd "$REPO_ROOT" && mvn -q -B test) || failed=1
+
+  log_info "running the shell suite"
+  "${REPO_ROOT}/test/shell/run-tests.sh" || failed=1
+
+  if (( failed )); then
+    log_fail "one or more suites failed"
+    return 1
+  fi
+  log_ok "all suites passed"
+}
+
+# Streams a running server's real event log as NDJSON, ready for `verify`. This
+# is what makes the audit independent in practice: the checker reads bytes off the
+# wire and never touches the application's code. With security on, set
+# TURNSTILE_TOKEN to a staff bearer token.
+cmd_export() {
+  local url="${TURNSTILE_URL:-http://127.0.0.1:8080}"
+  while getopts ':u:h' opt; do
+    case "$opt" in
+      u) url="$OPTARG" ;;
+      h) printf 'Usage: turnstilectl export [-u URL]\n\nPrints the live event log as NDJSON.\nEnvironment: TURNSTILE_URL (default %s), TURNSTILE_TOKEN (staff bearer token)\n' "$url"; return 0 ;;
+      *) die "unknown option: -${OPTARG:-?}" ;;
+    esac
+  done
+  require_command curl
+  local -a auth=()
+  [[ -z "${TURNSTILE_TOKEN:-}" ]] || auth=(-H "Authorization: Bearer ${TURNSTILE_TOKEN}")
+  # --fail turns a 401/403/500 into a non-zero exit, so a refused export can never
+  # be mistaken for an empty (and therefore "clean") log.
+  curl --silent --show-error --fail "${auth[@]}" "${url%/}/api/export" \
+    || die "could not export the log from ${url}"
+}
+
+# Starts the server from the built jar, building it first if needed.
+cmd_up() {
+  require_command java mvn
+  local jar="${REPO_ROOT}/target/turnstile-${VERSION}-SNAPSHOT.jar"
+  if [[ ! -f "$jar" ]]; then
+    log_info "no jar yet, building"
+    (cd "$REPO_ROOT" && mvn -q -B -DskipTests package) || die "build failed"
+  fi
+  log_info "starting Turnstile; open http://localhost:${SERVER_PORT:-8080}/"
+  exec java -jar "$jar" "$@"
+}
+
+# Load test, then audit. Starts a server, releases a crowd on it with Gatling, then
+# exports the log the server actually wrote and hands it to the independent
+# verifier. Gatling only proves the server answered; the verifier proves the answers
+# were right. A load test that does not check the result is only a benchmark.
+cmd_load() {
+  local users=10000 seats=1000 port=8097 ramp=20
+  while getopts ":u:s:p:r:h" opt; do
+    case "$opt" in
+      u) users="$OPTARG" ;;
+      s) seats="$OPTARG" ;;
+      p) port="$OPTARG" ;;
+      r) ramp="$OPTARG" ;;
+      h) printf 'Usage: turnstilectl load [-u USERS] [-s SEATS] [-p PORT]\n\nStarts a server, runs a Gatling rush of USERS buyers over SEATS seats, then audits the log.\n'; return 0 ;;
+      *) die "unknown option: -${OPTARG:-?}" ;;
+    esac
+  done
+  require_command java mvn curl awk
+
+  local jar="${REPO_ROOT}/target/turnstile-${VERSION}-SNAPSHOT.jar"
+  if [[ ! -f "$jar" ]]; then
+    log_info "no jar yet, building"
+    (cd "$REPO_ROOT" && mvn -q -B -DskipTests package) || die "build failed"
+  fi
+
+  local workdir server_log server_pid='' status=0 base="http://127.0.0.1:${port}"
+  make_temp_dir workdir
+  server_log="${workdir}/server.log"
+
+  log_info "starting a server on port ${port}"
+  java -jar "$jar" --server.port="$port" >"$server_log" 2>&1 &
+  server_pid=$!
+
+  _load_run() {
+    local i
+    for i in $(seq 1 60); do
+      curl -sf "${base}/actuator/health" >/dev/null 2>&1 && break
+      kill -0 "$server_pid" 2>/dev/null || { log_error "the server exited during startup:"; tail -20 "$server_log" >&2; return 1; }
+      sleep 1
+    done
+    curl -sf "${base}/actuator/health" >/dev/null 2>&1 || { log_error "the server never became healthy"; return 1; }
+
+    log_info "releasing ${users} buyers on ${seats} seats with Gatling (ramp: ${ramp}s)"
+    (cd "$REPO_ROOT" && mvn -B -q -Pload gatling:test -Dbase="$base" -Dusers="$users" -Dseats="$seats" -Dramp="$ramp") \
+      || { log_error "the load run failed (see the Gatling output above)"; return 1; }
+
+    log_info "auditing the log the server wrote, with the independent verifier"
+    ( set -o pipefail; TURNSTILE_URL="$base" cmd_export | "${REPO_ROOT}/scripts/verify-invariants.sh" -s ) \
+      || { log_error "the audit did not pass"; return 1; }
+  }
+
+  _load_run || status=$?
+  kill "$server_pid" 2>/dev/null || true
+  wait "$server_pid" 2>/dev/null || true
+  return "$status"
+}
+
+cmd_mutate() {
+  # Not exec, for the same reason as cmd_verify.
+  "${REPO_ROOT}/scripts/mutation-check.sh" "$@"
+}
+
+# Preflight the build environment. Reports everything rather than dying on the
+# first problem, because being told about three missing tools one run at a time
+# is its own small misery.
+cmd_doctor() {
+  local problems=0
+
+  check() {
+    local label="$1" ok="$2" detail="$3"
+    if [[ "$ok" == 'yes' ]]; then
+      printf '  %s[ ok ]%s %-22s %s\n' "$C_GREEN" "$C_RESET" "$label" "$detail"
+    else
+      printf '  %s[fail]%s %-22s %s\n' "$C_RED" "$C_RESET" "$label" "$detail"
+      problems=$((problems + 1))
+    fi
+  }
+
+  printf '%senvironment%s\n' "$C_BOLD" "$C_RESET"
+
+  local os_name kernel
+  os_name="$(uname -s 2>/dev/null || echo unknown)"
+  kernel="$(uname -r 2>/dev/null || echo unknown)"
+  check 'os' 'yes' "${os_name} ${kernel}"
+
+  if command -v java >/dev/null 2>&1; then
+    local java_version java_major
+    java_version="$(java -version 2>&1 | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    java_major="${java_version%%.*}"
+    if (( java_major >= 21 )); then
+      check 'java' 'yes' "${java_version} (virtual threads available)"
+    elif (( java_major >= 17 )); then
+      check 'java' 'yes' "${java_version} (builds; 21 needed for virtual threads)"
+    else
+      check 'java' 'no' "${java_version} is too old, 17 is the minimum"
+    fi
+  else
+    check 'java' 'no' 'not on PATH'
+  fi
+
+  if command -v mvn >/dev/null 2>&1; then
+    check 'maven' 'yes' "$(mvn -v 2>/dev/null | head -1 | cut -d' ' -f1-3)"
+  else
+    check 'maven' 'no' 'not on PATH'
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    if docker info >/dev/null 2>&1; then
+      check 'docker' 'yes' "$(docker --version | cut -d, -f1) (daemon reachable)"
+    else
+      printf '  %s[warn]%s %-22s %s\n' "$C_YELLOW" "$C_RESET" 'docker' 'installed but the daemon is not responding (only needed from phase 2)'
+    fi
+  else
+    printf '  %s[warn]%s %-22s %s\n' "$C_YELLOW" "$C_RESET" 'docker' 'not on PATH (only needed for Testcontainers from phase 2)'
+  fi
+
+  printf '\n%sshell tooling%s\n' "$C_BOLD" "$C_RESET"
+  local tool
+  for tool in awk sed sort uniq; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      check "$tool" 'yes' "$(command -v "$tool")"
+    else
+      check "$tool" 'no' 'not on PATH'
+    fi
+  done
+
+  for tool in shellcheck jq; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      check "$tool" 'yes' "$(command -v "$tool")"
+    else
+      printf '  %s[warn]%s %-22s %s\n' "$C_YELLOW" "$C_RESET" "$tool" 'optional, not installed'
+    fi
+  done
+
+  printf '\n%sdisk%s\n' "$C_BOLD" "$C_RESET"
+  local avail
+  avail="$(df -Ph "$REPO_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')" || avail='unknown'
+  check 'free space' 'yes' "${avail} available at ${REPO_ROOT}"
+
+  printf '\n'
+  if (( problems > 0 )); then
+    log_fail "${problems} problem(s) found"
+    return 1
+  fi
+  log_ok 'environment looks good'
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    usage >&2
+    exit 2
+  fi
+
+  local command="$1"
+  shift
+
+  # A non-zero exit is a legitimate result here, not a crash: `doctor` reports
+  # problems and `verify` reports violations. Collecting the status rather than
+  # letting errexit fire keeps the ERR trap for genuine faults, so a failed
+  # audit reads as a finding instead of a stack trace.
+  local status=0
+  case "$command" in
+    simulate) cmd_simulate "$@" ;;
+    verify)   cmd_verify "$@" ;;
+    prove)    cmd_prove "$@" ;;
+    test)     cmd_test "$@" ;;
+    doctor)   cmd_doctor "$@" ;;
+    mutate)   cmd_mutate "$@" ;;
+    export)   cmd_export "$@" ;;
+    load)     cmd_load "$@" ;;
+    up)       cmd_up "$@" ;;
+    version) printf 'turnstilectl %s\n' "$VERSION" ;;
+    help|-h|--help) usage ;;
+    *)
+      usage >&2
+      die "unknown command: ${command}"
+      ;;
+  esac || status=$?
+
+  exit "$status"
+}
+
+main "$@"

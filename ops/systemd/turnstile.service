@@ -1,0 +1,72 @@
+# systemd unit for the Turnstile service.
+#
+# Written out rather than left to a container runtime because the resource and
+# security directives below are the ones that actually matter on a host, and
+# they are worth being explicit about.
+
+# Runs the production profile (PostgreSQL store, JWT security, no demo). Secrets
+# come from /etc/turnstile/turnstile.env, which must define at least:
+#   TURNSTILE_POSTGRES_PASSWORD, TURNSTILE_OIDC_JWKS_URI
+#
+# Written against the jar and the prod profile, both of which are exercised by the
+# test suite. The unit file itself has NOT been run under systemd: there is no
+# systemd where this was built, so treat the resource and hardening directives as
+# unverified until you have started it once and read `journalctl -u turnstile`.
+
+[Unit]
+Description=Turnstile seat reservation service
+Documentation=https://github.com/adxmrxk/Turnstile
+After=network-online.target postgresql.service
+Wants=network-online.target
+# The service cannot make progress without its event store, so tie them
+# together rather than letting it start and crash-loop.
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User=turnstile
+Group=turnstile
+
+Environment=JAVA_OPTS=-XX:+UseZGC -XX:MaxRAMPercentage=75
+Environment=SPRING_PROFILES_ACTIVE=prod
+EnvironmentFile=-/etc/turnstile/turnstile.env
+
+ExecStart=/usr/bin/java $JAVA_OPTS -jar /opt/turnstile/turnstile.jar
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Spring Boot's shutdown hook drains in-flight requests. SIGTERM plus a generous
+# stop timeout gives it the chance; SIGKILL mid-transaction is what leaves holds
+# stranded until they expire.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=5s
+
+# cgroup limits. MemoryMax is a hard ceiling: exceeding it means the OOM killer
+# takes the process rather than the host degrading for everyone else.
+MemoryMax=2G
+MemoryHigh=1500M
+CPUQuota=200%
+TasksMax=4096
+LimitNOFILE=65535
+
+# Hardening. Each of these removes something the JVM has no business touching.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=/var/log/turnstile /var/lib/turnstile
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turnstile
+
+[Install]
+WantedBy=multi-user.target

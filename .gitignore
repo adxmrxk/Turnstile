@@ -1,0 +1,6 @@
+target/
+*.class
+*.ndjson
+.idea/
+*.iml
+.vscode/

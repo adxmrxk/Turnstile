@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turnstile</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d38; --text: #e6edf3; --dim: #8b98a8;
+    --free: #2a3341; --held: #e3a008; --sold: #2ea043; --bad: #f85149; --accent: #58a6ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f8fa; --panel: #fff; --line: #d0d7de; --text: #1f2328; --dim: #59636e;
+            --free: #d8dee4; --held: #bf8700; --sold: #1a7f37; --bad: #cf222e; --accent: #0969da; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -.02em; }
+  .sub { color: var(--dim); margin: 0 0 22px; max-width: 62ch; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  label { display: flex; flex-direction: column; font-size: 12px; color: var(--dim); gap: 4px; }
+  input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+          padding: 8px 10px; width: 120px; font-size: 15px; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 9px 18px;
+           font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--dim); }
+  .bar { height: 6px; background: var(--free); border-radius: 3px; overflow: hidden; margin-top: 12px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .12s; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(14px, 1fr)); gap: 3px; }
+  #grid i { aspect-ratio: 1; border-radius: 3px; background: var(--free); transition: background .15s; }
+  #grid i.HELD { background: var(--held); } #grid i.SOLD { background: var(--sold); }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--dim); margin-top: 10px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .verdict { display: none; }
+  .verdict.on { display: block; }
+  .ok { color: var(--sold); font-weight: 600; } .no { color: var(--bad); font-weight: 600; }
+  code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 13px; }
+  .conn { float: right; font-size: 12px; color: var(--dim); }
+  .conn::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                  background: var(--bad); margin-right: 6px; }
+  .conn.up::before { background: var(--sold); }
+</style>
+</head>
+<body>
+<main>
+  <span class="conn" id="conn">connecting</span>
+  <h1>Turnstile</h1>
+  <p class="sub">Release a crowd on a small number of seats and watch it settle. Every buyer runs the real purchase saga:
+     hold, pay, confirm, with payment failures injected. When it is over, the event log is audited by a checker that shares no code with the sale.</p>
+
+  <div class="card">
+    <div class="row">
+      <label>Seats <input id="seats" type="number" min="1" max="1000" value="300"></label>
+      <label>Buyers <input id="buyers" type="number" min="1" max="20000" value="10000"></label>
+      <button id="go">Release the crowd</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><b id="sold">0</b><span>seats sold</span></div>
+      <div class="stat"><b id="refused">0</b><span>told the seat was taken</span></div>
+      <div class="stat"><b id="declined">0</b><span>payment failed, hold released</span></div>
+      <div class="stat"><b id="refunded">0</b><span>paid too late, refunded</span></div>
+      <div class="stat"><b id="rate">-</b><span>buyers / second</span></div>
+    </div>
+    <div class="bar"><i id="progress"></i></div>
+  </div>
+
+  <div class="card">
+    <div id="grid"></div>
+    <div class="legend">
+      <span><i style="background:var(--free)"></i>available</span>
+      <span><i style="background:var(--held)"></i>held</span>
+      <span><i style="background:var(--sold)"></i>sold</span>
+    </div>
+  </div>
+
+  <div class="card verdict" id="verdict">
+    <div id="v-audit"></div>
+    <div id="v-money"></div>
+    <div id="v-count"></div>
+    <p class="sub" style="margin:12px 0 0">Check it yourself, independently, from a shell:
+       <code>turnstilectl export | turnstilectl verify</code></p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const seats = new Map();          // seatId -> DOM cell
+  let prefix = null, runStart = 0, total = 0;
+
+  function cell(id) {
+    let c = seats.get(id);
+    if (!c) { c = document.createElement('i'); c.title = id; $('grid').appendChild(c); seats.set(id, c); }
+    return c;
+  }
+  function buildGrid(n, pre) {
+    $('grid').replaceChildren(); seats.clear();
+    for (let i = 0; i < n; i++) cell(pre + String(i).padStart(4, '0'));
+  }
+  const pending = new Map();        // coalesce per animation frame
+  function seatUpdate(views) {
+    for (const v of views) if (prefix && v.seatId.startsWith(prefix)) pending.set(v.seatId, v.status);
+    requestAnimationFrame(() => { for (const [id, s] of pending) cell(id).className = s; pending.clear(); });
+  }
+  function progress(p) {
+    if (prefix === null || !p.runId || !prefix.includes(p.runId)) return;
+    $('sold').textContent = p.sold; $('refused').textContent = p.refused;
+    $('declined').textContent = p.declined; $('refunded').textContent = p.refunded;
+    $('progress').style.width = (100 * p.done / p.total) + '%';
+    const secs = (performance.now() - runStart) / 1000;
+    if (secs > 0.05 && p.done) $('rate').textContent = Math.round(p.done / secs).toLocaleString();
+    if (p.finished) finish(p.runId);
+  }
+  async function finish(runId) {
+    const r = await (await fetch('/api/demo/rush/' + runId)).json();
+    if (!r.audit) return;
+    const p = r.progress, a = r.audit, m = r.money;
+    $('rate').textContent = Math.round(p.total / (r.millis / 1000)).toLocaleString();
+    $('v-audit').innerHTML = a.clean
+      ? `<span class="ok">Audit clean.</span> ${a.events.toLocaleString()} events re-checked, ${a.seatsSold} seats sold, no seat sold twice, every sale traces to a real hold.`
+      : `<span class="no">AUDIT FAILED.</span> ${a.violations.join('; ')}`;
+    $('v-money').innerHTML = m.balanced
+      ? `<span class="ok">Money balances.</span> ${(m.heldCents / 100).toLocaleString()} held = ${p.sold} seats x price; every failed or late payment was returned.`
+      : `<span class="no">MONEY DOES NOT BALANCE.</span> held ${m.heldCents}, expected ${m.expectedCents}`;
+    $('v-count').innerHTML = `${p.total.toLocaleString()} buyers in ${r.millis.toLocaleString()} ms. ${p.sold} bought, ${p.refused} refused, ${p.declined} declined, ${p.refunded} refunded. ` +
+      (p.sold <= r.seats ? '<span class="ok">Never more sales than seats.</span>' : '<span class="no">OVERSOLD</span>');
+    $('verdict').classList.add('on'); $('go').disabled = false;
+  }
+
+  $('go').onclick = async () => {
+    $('go').disabled = true; $('verdict').classList.remove('on');
+    ['sold','refused','declined','refunded'].forEach(k => $(k).textContent = 0);
+    $('rate').textContent = '-'; $('progress').style.width = '0';
+    const n = +$('seats').value, b = +$('buyers').value;
+    const res = await fetch('/api/demo/rush', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ seats: n, buyers: b }) });
+    if (!res.ok) { $('go').disabled = false; alert(res.status === 409 ? 'A rush is already running.' : 'Could not start: ' + res.status); return; }
+    const r = await res.json();
+    prefix = r.seatPrefix; total = b; runStart = performance.now();
+    buildGrid(n, prefix);
+  };
+
+  // --- minimal STOMP over a WebSocket, so the page needs no library ---
+  function connect() {
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    const send = (cmd, headers, body = '') => ws.send(cmd + '\n' + Object.entries(headers).map(([k, v]) => k + ':' + v).join('\n') + '\n\n' + body + '\0');
+    ws.onopen = () => send('CONNECT', { 'accept-version': '1.2', 'heart-beat': '0,0' });
+    ws.onmessage = e => {
+      for (const raw of String(e.data).split('\0')) {
+        if (!raw.trim()) continue;
+        const cut = raw.indexOf('\n\n'); const head = raw.slice(0, cut).split('\n'); const body = raw.slice(cut + 2);
+        if (head[0] === 'CONNECTED') {
+          $('conn').textContent = 'live'; $('conn').classList.add('up');
+          send('SUBSCRIBE', { id: '0', destination: '/topic/seats' });
+          send('SUBSCRIBE', { id: '1', destination: '/topic/rush' });
+        } else if (head[0] === 'MESSAGE') {
+          const data = JSON.parse(body);
+          head.includes('subscription:0') ? seatUpdate(data) : progress(data);
+        }
+      }
+    };
+    ws.onclose = () => { $('conn').textContent = 'reconnecting'; $('conn').classList.remove('up'); setTimeout(connect, 1500); };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

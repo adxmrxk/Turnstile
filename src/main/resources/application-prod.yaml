@@ -1,0 +1,32 @@
+# Production profile: SPRING_PROFILES_ACTIVE=prod
+#
+# Everything that is safe to default on a laptop is deliberately not defaulted
+# here. A missing password or token endpoint should stop the process at startup,
+# where an operator will see it, and not let it run half configured.
+
+turnstile:
+  store: postgres
+  security:
+    mode: jwt
+  # The rush demo writes to the real log, so it is off in production.
+  demo:
+    enabled: false
+  postgres:
+    url: ${TURNSTILE_POSTGRES_URL:jdbc:postgresql://localhost:5432/turnstile}
+    username: ${TURNSTILE_POSTGRES_USER:turnstile}
+    password: ${TURNSTILE_POSTGRES_PASSWORD}
+
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Required. Tokens are verified against the issuer's published keys.
+          jwk-set-uri: ${TURNSTILE_OIDC_JWKS_URI}
+          issuer-uri: ${TURNSTILE_OIDC_ISSUER:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

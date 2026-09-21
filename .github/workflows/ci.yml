@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 5 * * 1" # weekly: the slow mutation run
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Java suite (real PostgreSQL and Kafka run in-process)
+        run: mvn -B verify
+      - name: Shell suite
+        run: ./test/shell/run-tests.sh
+      - name: End-to-end proof, audited by the independent awk verifier
+        run: ./bin/turnstilectl prove --seats 500 --buyers 5000
+      - name: Mutation targets still match the source
+        run: ./scripts/mutation-check.sh -c
+
+  mutation:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Break the code on purpose; the tests must notice every time
+        run: ./bin/turnstilectl mutate

@@ -1,0 +1,45 @@
+enum SeatStatus {
+  AVAILABLE
+  HELD
+  SOLD
+}
+
+"A seat. Asking for `asOf` returns the seat as it was at that moment."
+type Seat {
+  id: ID!
+  status: SeatStatus!
+  holdId: String
+  eventsApplied: Int!
+  "Every event this seat has had. Staff only."
+  history: [SeatEvent!]!
+}
+
+type SeatEvent {
+  version: Int!
+  type: String!
+  occurredAt: String!
+  holdId: String
+}
+
+type Stats {
+  available: Int!
+  held: Int!
+  sold: Int!
+  total: Int!
+}
+
+"The result of re-deriving the no-oversell invariants from the exported log."
+type AuditReport {
+  clean: Boolean!
+  events: Int!
+  seatsSold: Int!
+  violations: [String!]!
+}
+
+type Query {
+  seat(id: ID!, asOf: String): Seat
+  seats(status: SeatStatus, limit: Int = 100): [Seat!]!
+  stats: Stats!
+  "Staff only."
+  audit: AuditReport!
+}

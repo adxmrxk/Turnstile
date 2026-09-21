@@ -1,0 +1,29 @@
+# Audits the RUNNING service's real event log with the independent awk verifier.
+# `turnstilectl export` fetches /api/export; the verifier shares no code with the
+# application. Needs a staff bearer token in /etc/turnstile/audit.env as
+# TURNSTILE_TOKEN. Not run under systemd here (see turnstile.service); the pipeline
+# itself is tested, including that a failed export fails the unit.
+
+[Unit]
+Description=Audit the Turnstile event log for oversells
+After=turnstile.service
+
+[Service]
+Type=oneshot
+User=turnstile
+Group=turnstile
+
+# Exits non-zero on a violation, which systemd records as a unit failure and
+# any alerting already watching systemd will pick up without extra plumbing.
+EnvironmentFile=-/etc/turnstile/audit.env
+# pipefail: without it a failed export feeds the verifier an empty log, which passes.
+ExecStart=/bin/bash -c 'set -o pipefail; /opt/turnstile/bin/turnstilectl export | /opt/turnstile/scripts/verify-invariants.sh -q'
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turnstile-verify
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

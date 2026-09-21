@@ -1,0 +1,17 @@
+# Runs the invariant audit continuously in production, not just in CI.
+#
+# A correctness property checked only at build time is a property you find out
+# about from a customer. This re-audits the live log every fifteen minutes.
+
+[Unit]
+Description=Periodic Turnstile invariant audit
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+# Spread the load if several nodes boot together.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

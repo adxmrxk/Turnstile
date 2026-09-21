@@ -1,0 +1,4 @@
+# Shell scripts and the Java sources must keep LF endings. A CRLF shebang line
+# makes a script fail with a confusing "bad interpreter" error on Linux.
+* text=auto eol=lf
+*.bat text eol=crlf

@@ -1,0 +1,72 @@
+# A minimal Kubernetes deployment. It expects PostgreSQL, Kafka and an OIDC issuer
+# to exist already, and reads their addresses and the database password from the
+# Secret below, which you must replace: the value here is a placeholder.
+#
+#   kubectl apply -f ops/k8s/turnstile.yaml
+#
+# Not applied to any cluster where this was written. Treat as a starting point.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: turnstile-secrets
+type: Opaque
+stringData:
+  TURNSTILE_POSTGRES_PASSWORD: REPLACE-ME
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: turnstile-config
+data:
+  SPRING_PROFILES_ACTIVE: prod
+  TURNSTILE_POSTGRES_URL: jdbc:postgresql://postgres:5432/turnstile
+  TURNSTILE_POSTGRES_USER: turnstile
+  TURNSTILE_KAFKA_ENABLED: "true"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET: earliest
+  TURNSTILE_OIDC_JWKS_URI: https://auth.example.com/realms/turnstile/protocol/openid-connect/certs
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: turnstile
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: turnstile }
+  template:
+    metadata:
+      labels: { app: turnstile }
+    spec:
+      containers:
+        - name: turnstile
+          image: turnstile:0.1.0
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef: { name: turnstile-config }
+            - secretRef: { name: turnstile-secrets }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            initialDelaySeconds: 15
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: turnstile
+spec:
+  selector: { app: turnstile }
+  ports:
+    - port: 80
+      targetPort: 8080
