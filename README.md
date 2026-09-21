@@ -84,6 +84,33 @@ whoever their token says, and the raw log, audit and history need a staff role.
 | Rewriting the log is detectable | A test that plays a database owner: switches the append-only trigger off, then edits, deletes, rewrites and truncates history |
 | The live page works | Its real JavaScript run under Node against a live server |
 
+## Measured improvements
+
+Found by measuring, with `mvn test -Dbench=true -Dtest=Benchmarks#<name>` on real
+PostgreSQL and Kafka. Numbers are from one Windows laptop running the load
+generator, the server and the database together, so read them as ratios.
+
+| Weak point | Before | After |
+|---|---|---|
+| Exporting or rebuilding a 600,000-event log, 300 MB heap | OutOfMemoryError | completes in 3.5 s |
+| Outbox rows kept after publishing (3,000 events) | 3,000, forever | 0 |
+| Messages re-read from Kafka after a restart | 3,000 (the whole topic) | 0 |
+| `GET /api/seats` with 20,000 seats, 32 readers | 51 reads/s, p50 615 ms | about 280 reads/s, p50 about 100 ms; an unchanged map is a 304 |
+| Purchases stranded by a crash | recovered only at restart | recovered by a scheduled reaper |
+| Metrics | none | store, purchase, projection, outbox, saga and pool metrics at `/actuator/prometheus` |
+
+Things that were tried and **did not help**, and were kept out or reverted:
+
+- **A bigger connection pool.** Pool 10 to 80 cut connection wait from 111 s to 4 s
+  and left throughput unchanged at about 900 purchases/s.
+- **Persisting fewer saga states per purchase.** No measurable change; reverted.
+- **Fewer statements per append.** Within noise on a loopback database. Kept, since it
+  removes round trips that would cost real time over a network, but it is not a
+  measured speedup.
+
+Another early benchmark result was an artifact: the test database handle was not a
+connection pool, which made appends look 80 times slower than they are.
+
 ## Limits and open problems
 
 - **The 200,000-buyer goal is not met.** The largest run is 20,000 buyers on 2,000
@@ -102,8 +129,9 @@ whoever their token says, and the raw log, audit and history need a staff role.
 - **Substitutions:** a polling outbox relay instead of Debezium, a plain Kafka
   consumer instead of Kafka Streams, embedded Postgres and Kafka instead of
   Testcontainers.
-- `readAll` (export, audit, rebuild) loads the whole log into memory, and the
-  outbox table is never pruned.
+- The hash-chain verifier and the rush demo still load the whole log into memory;
+  only export, audit and rebuild stream. Kafka consumer groups are per process and
+  are never reused, so stale ones pile up on the broker until it expires them.
 
 ## Build and test
 
@@ -116,7 +144,7 @@ make prove       # simulate a contended sale and audit it
 ```
 
 ```
-Java   Tests run: 111, Failures: 0, Errors: 0, Skipped: 0
+Java   Tests run: 121, Failures: 0, Errors: 0, Skipped: 0
 Shell  all 38 shell assertions passed
 ```
 
