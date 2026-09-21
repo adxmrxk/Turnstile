@@ -26,15 +26,27 @@ public class SeatController {
   private final SeatMapProjection seatMap;
   private final SeatQueries queries;
 
-  public SeatController(SeatMapProjection seatMap, SeatQueries queries) {
+  private final SeatMapSnapshot snapshot;
+
+  public SeatController(SeatMapProjection seatMap, SeatQueries queries, SeatMapSnapshot snapshot) {
+    this.snapshot = snapshot;
     this.seatMap = seatMap;
     this.queries = queries;
   }
 
-  /** The fast read model: every seat that has had an event. */
-  @GetMapping("/seats")
-  public List<SeatView> seats() {
-    return seatMap.all();
+  /**
+   * The seat map, served from a snapshot that is rebuilt only when it changes. Send
+   * the last {@code ETag} back as {@code If-None-Match} and an unchanged map costs a
+   * 304 with no body, which is what a page polling every second wants.
+   */
+  @GetMapping(value = "/seats", produces = "application/json")
+  public org.springframework.http.ResponseEntity<byte[]> seats(
+      @org.springframework.web.bind.annotation.RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
+    SeatMapSnapshot.Snapshot s = snapshot.get();
+    var response = org.springframework.http.ResponseEntity.status(s.etag().equals(ifNoneMatch) ? 304 : 200)
+        .header("ETag", s.etag())
+        .header("Cache-Control", "no-cache");
+    return s.etag().equals(ifNoneMatch) ? response.build() : response.body(s.json());
   }
 
   @GetMapping("/stats")
