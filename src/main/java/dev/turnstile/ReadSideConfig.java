@@ -22,8 +22,10 @@ public class ReadSideConfig {
   SeatMapProjection seatMap(
       NotifyingEventStore store,
       Clock clock,
-      @Value("${turnstile.kafka.enabled:false}") boolean viaKafka) {
+      @Value("${turnstile.kafka.enabled:false}") boolean viaKafka,
+      io.micrometer.core.instrument.MeterRegistry metrics) {
     SeatMapProjection projection = new SeatMapProjection(store, clock);
+    projection.instrument(metrics);
     projection.rebuild();
     if (!viaKafka) {
       store.subscribe(

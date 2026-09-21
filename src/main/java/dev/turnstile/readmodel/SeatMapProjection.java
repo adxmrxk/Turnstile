@@ -34,10 +34,25 @@ public final class SeatMapProjection {
   private final Clock clock;
   private final Map<String, SeatView> seats = new ConcurrentHashMap<>();
   private final List<Consumer<SeatView>> listeners = new CopyOnWriteArrayList<>();
+  private volatile io.micrometer.core.instrument.MeterRegistry metrics;
+  private volatile java.time.Instant rebuildStartedAt = java.time.Instant.EPOCH;
+  private final java.util.concurrent.atomic.AtomicLong changes = new java.util.concurrent.atomic.AtomicLong();
 
   public SeatMapProjection(EventStore log, Clock clock) {
     this.log = log;
     this.clock = clock;
+  }
+
+  /** Counts what happens to each event fed in: applied, duplicate, or a re-read of the log. */
+  public void instrument(io.micrometer.core.instrument.MeterRegistry registry) {
+    this.metrics = registry;
+  }
+
+  private void count(String result) {
+    var m = metrics;
+    if (m != null) {
+      m.counter("turnstile.projection.events", "result", result).increment();
+    }
   }
 
   public void onChange(Consumer<SeatView> listener) {
@@ -46,10 +61,22 @@ public final class SeatMapProjection {
 
   /** Discards everything and refolds the entire log. */
   public synchronized void rebuild() {
+    rebuildStartedAt = java.time.Instant.now();
     seats.clear();
-    for (StoredEvent stored : log.readAll()) {
-      seats.compute(stored.streamId(), (id, current) -> fold(current, stored.version(), stored.event()));
-    }
+    // Streamed, so restarting over a large log does not need the whole log in memory.
+    log.forEachEvent(
+        stored -> seats.compute(stored.streamId(), (id, current) -> fold(current, stored.version(), stored.event())));
+    changes.incrementAndGet();
+  }
+
+  /** When the last rebuild began. Anything committed after this reaches us as a live event. */
+  public java.time.Instant rebuildStartedAt() {
+    return rebuildStartedAt;
+  }
+
+  /** Bumps on every change, so a cached copy of the map can tell when it is stale. */
+  public long changeCount() {
+    return changes.get();
   }
 
   /** Applies one event. Safe to call twice with the same event. */
@@ -59,17 +86,21 @@ public final class SeatMapProjection {
       SeatView current = seats.get(streamId);
       long applied = current == null ? 0 : current.version();
       if (version <= applied) {
+        count("duplicate");
         return; // duplicate delivery
       }
       if (version > applied + 1) {
+        count("refold");
         refold(streamId); // missed something; the log is the source of truth
         changed = seats.get(streamId);
       } else {
+        count("applied");
         changed = fold(current, version, event);
         seats.put(streamId, changed);
       }
     }
     if (changed != null) {
+      changes.incrementAndGet();
       for (Consumer<SeatView> listener : listeners) {
         listener.accept(changed);
       }

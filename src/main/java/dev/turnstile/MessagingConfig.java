@@ -63,12 +63,17 @@ public class MessagingConfig {
   }
 
   @Bean
-  OutboxRelay outboxRelay(DataSource dataSource, EventPublisher publisher) {
+  OutboxRelay outboxRelay(DataSource dataSource, EventPublisher publisher, io.micrometer.core.instrument.MeterRegistry metrics) {
     OutboxRelay relay = new OutboxRelay(dataSource, publisher, 200);
+    io.micrometer.core.instrument.Gauge.builder("turnstile.outbox.pending", relay, OutboxRelay::pending)
+        .description("Events committed but not yet published to Kafka")
+        .register(metrics);
     poller.scheduleWithFixedDelay(
         () -> {
           try {
-            while (relay.pollOnce() > 0) {
+            int n;
+            while ((n = relay.pollOnce()) > 0) {
+              metrics.counter("turnstile.outbox.published").increment(n);
               // keep draining while there is a backlog
             }
           } catch (RuntimeException e) {

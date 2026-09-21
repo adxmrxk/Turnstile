@@ -42,7 +42,10 @@ public class PurchaseController {
   private final PurchaseSaga saga;
   private final PricingProperties pricing;
 
-  public PurchaseController(PurchaseSaga saga, PricingProperties pricing) {
+  private final io.micrometer.core.instrument.MeterRegistry metrics;
+
+  public PurchaseController(PurchaseSaga saga, PricingProperties pricing, io.micrometer.core.instrument.MeterRegistry metrics) {
+    this.metrics = metrics;
     this.saga = saga;
     this.pricing = pricing;
   }
@@ -69,7 +72,14 @@ public class PurchaseController {
     String key = idempotencyKey == null ? UUID.randomUUID().toString() : Ids.require("Idempotency-Key", idempotencyKey);
     String sagaId = buyerId + ":" + key;
 
+    long began = System.nanoTime();
     SagaRecord result = saga.start(sagaId, seatId, buyerId, amount);
+    io.micrometer.core.instrument.Timer.builder("turnstile.purchase")
+        .description("End-to-end purchase time, by outcome")
+        .tag("state", result.state().name())
+        .publishPercentiles(0.5, 0.95, 0.99)
+        .register(metrics)
+        .record(System.nanoTime() - began, java.util.concurrent.TimeUnit.NANOSECONDS);
     return ResponseEntity.status(statusFor(result)).body(PurchaseResponse.of(key, result));
   }
 

@@ -22,12 +22,13 @@ import org.springframework.context.annotation.Configuration;
 public class PostgresConfig {
 
   @Bean(destroyMethod = "close")
-  DataSource dataSource(PostgresProperties props) {
+  DataSource dataSource(PostgresProperties props, io.micrometer.core.instrument.MeterRegistry metrics) {
     HikariConfig config = new HikariConfig();
     config.setJdbcUrl(props.url());
     config.setUsername(props.username());
     config.setPassword(props.password());
     config.setMaximumPoolSize(props.poolSize());
+    config.setMetricRegistry(metrics);
     return new HikariDataSource(config);
   }
 

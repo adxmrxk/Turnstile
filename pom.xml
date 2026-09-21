@@ -63,6 +63,11 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
+    <!-- Prometheus scrape endpoint for the Micrometer metrics. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus-simpleclient</artifactId>
+    </dependency>
     <!-- Live seat availability over STOMP. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

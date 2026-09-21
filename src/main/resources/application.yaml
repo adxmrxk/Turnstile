@@ -14,3 +14,9 @@ turnstile:
     # time against the clock, never by a scheduler, so correctness does not
     # depend on a sweeper firing punctually.
     ttl: PT2M
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus

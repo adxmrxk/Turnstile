@@ -36,7 +36,11 @@ public class SagaConfig {
 
   @Bean
   PurchaseSaga purchaseSaga(
+      io.micrometer.core.instrument.MeterRegistry metrics,
       SeatCommandHandler handler, PaymentGateway gateway, SagaLog log, HoldProperties hold) {
+    io.micrometer.core.instrument.Gauge.builder("turnstile.saga.incomplete", log, l -> l.incomplete().size())
+        .description("Purchases that have started but not finished")
+        .register(metrics);
     return new PurchaseSaga(handler, gateway, log, hold.ttl());
   }
 

@@ -5,6 +5,8 @@ import dev.turnstile.eventstore.EventCodec;
 import dev.turnstile.eventstore.EventStore;
 import dev.turnstile.eventstore.InMemoryEventStore;
 import dev.turnstile.eventstore.NotifyingEventStore;
+import dev.turnstile.metrics.MeteredEventStore;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -35,8 +37,8 @@ public class TurnstileConfig {
    */
   @Bean
   @Primary
-  NotifyingEventStore eventStore(@Qualifier("rawEventStore") EventStore raw) {
-    return new NotifyingEventStore(raw);
+  NotifyingEventStore eventStore(@Qualifier("rawEventStore") EventStore raw, MeterRegistry metrics) {
+    return new NotifyingEventStore(new MeteredEventStore(raw, metrics));
   }
 
   @Bean

@@ -48,6 +48,20 @@ public final class TestPostgres {
     return dataSource;
   }
 
+  /**
+   * A connection pool onto the same database, for benchmarks. The plain data source
+   * above opens a new connection for every statement made outside a transaction,
+   * which is nothing like production and made early benchmark numbers meaningless.
+   */
+  public static javax.sql.DataSource pooled(int size) {
+    var config = new com.zaxxer.hikari.HikariConfig();
+    config.setJdbcUrl(jdbcUrl());
+    config.setUsername("postgres");
+    config.setPassword("");
+    config.setMaximumPoolSize(size);
+    return new com.zaxxer.hikari.HikariDataSource(config);
+  }
+
   /** For tests that boot the whole application against this database. */
   public static String jdbcUrl() {
     dataSource();
