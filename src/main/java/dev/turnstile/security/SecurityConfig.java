@@ -66,7 +66,7 @@ public class SecurityConfig {
                     .permitAll()
                     .requestMatchers("/api/purchases", "/api/purchases/**")
                     .hasAnyRole("buyer", "staff")
-                    .requestMatchers("/api/export", "/api/audit", "/api/seats/*/history", "/api/demo/**")
+                    .requestMatchers("/api/export", "/api/audit", "/api/log/**", "/api/seats/*/history", "/api/demo/**")
                     .hasRole("staff")
                     .requestMatchers("/graphql", "/graphiql")
                     .permitAll() // per-field checks live in the resolvers

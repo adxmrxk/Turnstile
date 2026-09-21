@@ -2,6 +2,7 @@ package dev.turnstile;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import dev.turnstile.eventstore.ChainVerifier;
 import dev.turnstile.eventstore.EventCodec;
 import dev.turnstile.eventstore.EventStore;
 import dev.turnstile.eventstore.PostgresEventStore;
@@ -41,6 +42,11 @@ public class PostgresConfig {
   @Bean
   SagaLog jdbcSagaLog(DataSource dataSource, Flyway migrated) {
     return new JdbcSagaLog(dataSource);
+  }
+
+  @Bean
+  ChainVerifier chainVerifier(DataSource dataSource, Flyway migrated) {
+    return new ChainVerifier(dataSource);
   }
 
   @Bean(name = "rawEventStore")

@@ -132,25 +132,44 @@ public final class PostgresEventStore implements EventStore {
       throw new ConcurrencyConflictException(streamId, expectedVersion, actual);
     }
 
+    // Chain each event to the one before it. The hash is computed by the database
+    // inside the INSERT, over the payload as jsonb normalises it, because the
+    // append-only trigger forbids filling it in with an UPDATE afterwards.
+    // ChainVerifier recomputes the same value in Java, so the two agree or it shows.
+    String previousHash = lastHash(streamId);
     long version = expectedVersion;
     for (DomainEvent event : events) {
       version++;
-      Long seq =
+      String type = codec.typeOf(event);
+      String[] written =
           jdbc.queryForObject(
-              "INSERT INTO events (stream_id, version, type, payload, occurred_at) "
-                  + "VALUES (?, ?, ?, ?::jsonb, ?) RETURNING global_seq",
-              Long.class,
+              "WITH p AS (SELECT ?::jsonb AS payload) "
+                  + "INSERT INTO events (stream_id, version, type, payload, occurred_at, prev_hash, hash) "
+                  + "SELECT ?, ?, ?, p.payload, ?, ?, "
+                  + "  encode(sha256(convert_to(CAST(? AS TEXT) || '|' || CAST(? AS TEXT) || '|' "
+                  + "    || CAST(? AS TEXT) || '|' || CAST(? AS TEXT) || '|' || p.payload::text, 'UTF8')), 'hex') "
+                  + "FROM p RETURNING global_seq::text, hash",
+              (rs, i) -> new String[] {rs.getString(1), rs.getString(2)},
+              codec.toJson(event),
               streamId,
               version,
-              codec.typeOf(event),
-              codec.toJson(event),
-              Timestamp.from(occurredAt(event)));
+              type,
+              Timestamp.from(occurredAt(event)),
+              previousHash,
+              previousHash,
+              streamId,
+              Long.toString(version),
+              type);
+      if (written == null) {
+        throw new IllegalStateException("insert returned nothing");
+      }
+      previousHash = written[1];
 
       jdbc.update(
           "INSERT INTO outbox (event_key, stream_id, payload) VALUES (?, ?, ?::jsonb)",
           streamId + ":" + version,
           streamId,
-          codec.envelope(streamId, version, seq == null ? 0 : seq, event));
+          codec.envelope(streamId, version, Long.parseLong(written[0]), event));
     }
 
     if (idempotencyKey != null) {
@@ -160,6 +179,14 @@ public final class PostgresEventStore implements EventStore {
           idempotencyKey);
     }
     return new AppendResult(version, false);
+  }
+
+  /** Hash of the seat's newest event, or the genesis value for a seat with none. */
+  private String lastHash(String streamId) {
+    List<String> found =
+        jdbc.queryForList(
+            "SELECT hash FROM events WHERE stream_id = ? ORDER BY version DESC LIMIT 1", String.class, streamId);
+    return found.isEmpty() || found.get(0) == null ? ChainVerifier.GENESIS : found.get(0);
   }
 
   @Override
