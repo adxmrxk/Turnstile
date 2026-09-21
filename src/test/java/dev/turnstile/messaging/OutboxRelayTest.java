@@ -194,4 +194,30 @@ class OutboxRelayTest {
     }
   }
 
+
+  @Test
+  @DisplayName("pruning deletes old published rows and never an unpublished or recent one")
+  void pruning_is_safe() {
+    PostgresEventStore store = freshStore();
+    generateTraffic(store);
+    OutboxRelay relay = new OutboxRelay(TestPostgres.dataSource(), (key, eventKey, json) -> {}, 50);
+    while (relay.pending() > 0) {
+      relay.pollOnce();
+    }
+    var jdbc = new org.springframework.jdbc.core.JdbcTemplate(TestPostgres.dataSource());
+    long total = jdbc.queryForObject("SELECT count(*) FROM outbox", Long.class);
+
+    // Half of them were published long ago, half just now.
+    jdbc.update("UPDATE outbox SET published_at = now() - interval '2 hours' WHERE id % 2 = 0");
+    long old = jdbc.queryForObject("SELECT count(*) FROM outbox WHERE published_at < now() - interval '1 hour'", Long.class);
+    // And one event is committed but not yet published, and has been for two hours.
+    new SeatCommandHandler(store, CLOCK).hold("late-seat", "hl", "bl", Duration.ofMinutes(5), "kl");
+    jdbc.update("UPDATE outbox SET created_at = now() - interval '2 hours' WHERE published_at IS NULL");
+
+    int deleted = relay.prune(Duration.ofHours(1));
+
+    assertThat(deleted).as("only the rows published more than an hour ago").isEqualTo((int) old);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox", Long.class)).isEqualTo(total + 1 - old);
+    assertThat(relay.pending()).as("an announcement still owed is never pruned, however old").isEqualTo(1);
+  }
 }

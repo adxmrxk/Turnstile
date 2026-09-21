@@ -82,6 +82,19 @@ public final class OutboxRelay {
     return published == null ? 0 : published;
   }
 
+  /**
+   * Deletes rows that were published more than {@code retention} ago, a bounded
+   * batch at a time. Rows still waiting to be published are never deleted, however
+   * old: an unpublished row is an announcement the system still owes. Without
+   * pruning this table grows by one row per event, forever.
+   */
+  public int prune(java.time.Duration retention) {
+    return jdbc.update(
+        "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE published_at IS NOT NULL "
+            + "AND published_at < now() - make_interval(secs => ?) LIMIT 10000)",
+        retention.toMillis() / 1000.0);
+  }
+
   public long pending() {
     Long n = jdbc.queryForObject("SELECT count(*) FROM outbox WHERE published_at IS NULL", Long.class);
     return n == null ? 0 : n;

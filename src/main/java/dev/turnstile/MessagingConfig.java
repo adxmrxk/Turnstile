@@ -63,7 +63,12 @@ public class MessagingConfig {
   }
 
   @Bean
-  OutboxRelay outboxRelay(DataSource dataSource, EventPublisher publisher, io.micrometer.core.instrument.MeterRegistry metrics) {
+  OutboxRelay outboxRelay(
+      DataSource dataSource,
+      EventPublisher publisher,
+      io.micrometer.core.instrument.MeterRegistry metrics,
+      @Value("${turnstile.outbox.retention:PT1H}") java.time.Duration retention,
+      @Value("${turnstile.outbox.prune-interval:PT1M}") java.time.Duration pruneEvery) {
     OutboxRelay relay = new OutboxRelay(dataSource, publisher, 200);
     io.micrometer.core.instrument.Gauge.builder("turnstile.outbox.pending", relay, OutboxRelay::pending)
         .description("Events committed but not yet published to Kafka")
@@ -83,12 +88,29 @@ public class MessagingConfig {
         500,
         200,
         TimeUnit.MILLISECONDS);
+    poller.scheduleWithFixedDelay(
+        () -> {
+          try {
+            int deleted;
+            while ((deleted = relay.prune(retention)) > 0) {
+              metrics.counter("turnstile.outbox.pruned").increment(deleted);
+            }
+          } catch (RuntimeException e) {
+            LOG.warn("outbox pruning failed, will retry: {}", e.toString());
+          }
+        },
+        pruneEvery.toMillis(),
+        pruneEvery.toMillis(),
+        TimeUnit.MILLISECONDS);
     return relay;
   }
 
   @Bean
-  KafkaProjectionConsumer kafkaProjectionConsumer(SeatMapProjection projection, EventCodec codec) {
-    return new KafkaProjectionConsumer(projection, codec);
+  KafkaProjectionConsumer kafkaProjectionConsumer(
+      SeatMapProjection projection,
+      EventCodec codec,
+      @Value("${turnstile.kafka.replay-margin:PT5S}") java.time.Duration margin) {
+    return new KafkaProjectionConsumer(projection, codec, margin);
   }
 
   @PreDestroy

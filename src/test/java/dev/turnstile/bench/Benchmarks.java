@@ -292,7 +292,9 @@ class Benchmarks {
                   "turnstile.kafka.enabled", "true",
                   "spring.kafka.bootstrap-servers", kafka.getBrokersAsString(),
                   "spring.kafka.consumer.auto-offset-reset", "earliest",
-                  "turnstile.kafka.group-id", "bench-fixed-group"));
+                  "turnstile.outbox.retention", "PT0S",
+                  "turnstile.outbox.prune-interval", "PT1S",
+                  "turnstile.kafka.replay-margin", "PT1S"));
       ConfigurableApplicationContext first = node(props);
       int purchases = 1_500;
       ExecutorService pool = Executors.newFixedThreadPool(32);
