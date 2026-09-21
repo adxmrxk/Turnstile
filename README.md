@@ -61,6 +61,7 @@ code. A Java twin of it runs in-process, and a test requires the two to agree.
 | `GET /api/seats/{id}?asOf=<instant>` | A seat's state now, or as it was at any past moment. |
 | `GET /api/seats/{id}/history` | Every event for the seat. Staff. |
 | `GET /api/export`, `/api/audit` | The live log as NDJSON, and an in-process audit. Staff. |
+| `GET /api/log/checkpoint`, `POST /api/log/verify` | Tamper evidence (Postgres only): a checkpoint of every seat's hash-chain head, and a check of the log against one. Staff. |
 | `POST /graphql` | `seat`, `seats`, `stats`; staff-only `audit` and `history`. |
 | `WS /ws` | STOMP; subscribe to `/topic/seats`. |
 | `POST /api/demo/rush` | The live demo. Off in `prod`. |
@@ -79,6 +80,8 @@ whoever their token says, and the raw log, audit and history need a staff role.
 | A crash at any saga step recovers | Crashes injected at every step |
 | Roles are enforced | Real signed JWTs: forged, expired and tampered ones rejected |
 | The two verifiers agree | Awk and Java on 40 random logs plus hand-built cases |
+| Two servers share one database and Kafka safely | Two application instances, buyers split across both: no oversell, a retry on the other server returns the original purchase, both seat maps match the log |
+| Rewriting the log is detectable | A test that plays a database owner: switches the append-only trigger off, then edits, deletes, rewrites and truncates history |
 | The live page works | Its real JavaScript run under Node against a live server |
 
 ## Limits and open problems
@@ -91,6 +94,7 @@ whoever their token says, and the raw log, audit and history need a staff role.
 - **Never run:** Docker Compose, Kubernetes, the systemd units, Keycloak, and the
   chaos script (Linux only). Compose is only schema-checked.
 - **The payment provider is a simulator.**
+- **The hash chain has two blind spots**, both tested and both closed only by a checkpoint kept outside the database: an attacker who recomputes every later hash, and someone who deletes the newest events. It is per seat, Postgres only, and the in-memory store has none.
 - **The page has not been viewed in a browser**, only executed against the server.
 - **The mutation harness (`make mutate`) is unfinished.** 15 of 24 mutants were
   confirmed caught, at earlier states of the code; 9 never ran, and its
@@ -112,7 +116,7 @@ make prove       # simulate a contended sale and audit it
 ```
 
 ```
-Java   Tests run: 101, Failures: 0, Errors: 0, Skipped: 0
+Java   Tests run: 111, Failures: 0, Errors: 0, Skipped: 0
 Shell  all 38 shell assertions passed
 ```
 
