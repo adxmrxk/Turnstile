@@ -22,7 +22,18 @@ public final class KafkaProjectionConsumer {
     this.codec = codec;
   }
 
-  @KafkaListener(topics = "${turnstile.kafka.topic:turnstile.seat-events}", groupId = "turnstile-seat-map")
+  /**
+   * Every instance needs <em>every</em> event, because each keeps its own seat map.
+   * A shared consumer group would do the opposite: Kafka would split the topic's
+   * partitions between the instances, and each would see only a slice of the log
+   * and serve a wrong map. So each instance gets its own group, unique to this
+   * process. The cost is that groups are never reused (a restart replays the topic
+   * from the start, which is harmless because {@code apply} ignores duplicates),
+   * and stale groups pile up on the broker until Kafka expires them.
+   */
+  @KafkaListener(
+      topics = "${turnstile.kafka.topic:turnstile.seat-events}",
+      groupId = "turnstile-seat-map-#{T(java.util.UUID).randomUUID().toString()}")
   public void onEvent(String envelope) {
     StoredEvent stored = codec.fromEnvelope(envelope);
     projection.apply(stored.streamId(), stored.version(), stored.event());
