@@ -227,6 +227,72 @@ class PurchaseSagaTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Stuck purchases
+  // ---------------------------------------------------------------------------
+
+  private static PurchaseSaga.CrashPoint dieAt(String point) {
+    return reached -> {
+      if (reached.equals(point)) {
+        throw new IllegalStateException("simulated crash at " + reached);
+      }
+    };
+  }
+
+  @Test
+  @DisplayName("purchases stranded by a crash are finished by the reaper, with no restart")
+  void reaper_finishes_stranded_purchases() {
+    World w = memoryWorld();
+    SimulatedPaymentGateway gateway = SimulatedPaymentGateway.reliable();
+    for (int i = 0; i < 20; i++) {
+      try {
+        new PurchaseSaga(w.handler, gateway, w.log, LONG_TTL, dieAt("after-charge"))
+            .start("stuck-" + i, "seat-" + i, "buyer-" + i, PRICE);
+      } catch (IllegalStateException expectedCrash) {
+        // the process "died" after taking the money
+      }
+    }
+    assertThat(w.log.incomplete()).as("stranded before the reaper runs").hasSize(20);
+
+    List<SagaRecord> finished = w.saga(gateway, LONG_TTL).recoverStale(Duration.ZERO);
+
+    assertThat(finished).hasSize(20).allMatch(s -> s.state() == State.CONFIRMED);
+    assertThat(w.log.incomplete()).as("stranded after the reaper runs").isEmpty();
+    assertThat(gateway.netCents()).as("each buyer charged exactly once").isEqualTo(20 * PRICE);
+    assertThat(soldSeats(w)).hasSize(20);
+  }
+
+  @Test
+  @DisplayName("the reaper leaves a purchase alone until it has been idle long enough")
+  void reaper_does_not_touch_fresh_purchases() {
+    World w = memoryWorld();
+    SimulatedPaymentGateway gateway = SimulatedPaymentGateway.reliable();
+    try {
+      new PurchaseSaga(w.handler, gateway, w.log, LONG_TTL, dieAt("after-hold")).start("s1", "seat-1", "alice", PRICE);
+    } catch (IllegalStateException expectedCrash) {
+      // stranded just now
+    }
+
+    assertThat(w.saga(gateway, LONG_TTL).recoverStale(Duration.ofHours(1)))
+        .as("just touched, so it may still be in flight and must be left alone")
+        .isEmpty();
+    assertThat(w.log.find("s1").orElseThrow().state().terminal()).isFalse();
+  }
+
+  @Test
+  @DisplayName("a finished purchase is never dragged back by a slower writer, in memory or in Postgres")
+  void a_finished_purchase_is_never_overwritten() {
+    for (World w : List.of(memoryWorld(), postgresWorld())) {
+      SagaRecord fresh = new SagaRecord("s1", "seat-1", "alice", "hold-s1", "order-s1", PRICE, State.STARTED, null);
+      w.log.insert(fresh);
+      w.log.update(fresh.with(State.CONFIRMED, null));
+
+      w.log.update(fresh.with(State.HELD, null)); // a stale driver writes an older state
+
+      assertThat(w.log.find("s1").orElseThrow().state()).isEqualTo(State.CONFIRMED);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Money and seats balance under randomised failure
   // ---------------------------------------------------------------------------
 

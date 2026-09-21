@@ -99,6 +99,21 @@ public final class PurchaseSaga {
     return finished;
   }
 
+  /**
+   * Finishes purchases whose driver died: unfinished and untouched for {@code age}.
+   * Run on a schedule, this is what stops a crashed server from stranding buyers
+   * until its next restart. Safe beside live traffic, because a healthy saga
+   * writes its state as it goes and is never that old, and because a finished
+   * purchase is never overwritten by a slower writer.
+   */
+  public List<SagaRecord> recoverStale(Duration age) {
+    List<SagaRecord> finished = new ArrayList<>();
+    for (SagaRecord stuck : log.incompleteOlderThan(age)) {
+      finished.add(advance(stuck));
+    }
+    return finished;
+  }
+
   public Optional<SagaRecord> find(String sagaId) {
     return log.find(sagaId);
   }

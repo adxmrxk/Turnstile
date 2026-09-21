@@ -14,4 +14,10 @@ public interface SagaLog {
   Optional<SagaRecord> find(String sagaId);
 
   List<SagaRecord> incomplete();
+
+  /**
+   * Unfinished purchases nobody has touched for at least {@code age}. A live saga
+   * writes its state as it goes, so a stale one belongs to a driver that died.
+   */
+  List<SagaRecord> incompleteOlderThan(java.time.Duration age);
 }

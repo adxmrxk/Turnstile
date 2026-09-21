@@ -45,7 +45,9 @@ public final class JdbcSagaLog implements SagaLog {
   @Override
   public void update(SagaRecord r) {
     jdbc.update(
-        "UPDATE sagas SET state = ?, detail = ?, updated_at = now() WHERE saga_id = ?",
+        // A finished purchase is never overwritten: see InMemorySagaLog.update.
+        "UPDATE sagas SET state = ?, detail = ?, updated_at = now() WHERE saga_id = ? "
+            + "AND state NOT IN ('CONFIRMED','REFUSED','DECLINED','REFUNDED')",
         r.state().name(),
         r.detail(),
         r.sagaId());
@@ -54,6 +56,15 @@ public final class JdbcSagaLog implements SagaLog {
   @Override
   public Optional<SagaRecord> find(String sagaId) {
     return jdbc.query("SELECT * FROM sagas WHERE saga_id = ?", MAPPER, sagaId).stream().findFirst();
+  }
+
+  @Override
+  public List<SagaRecord> incompleteOlderThan(java.time.Duration age) {
+    return jdbc.query(
+        "SELECT * FROM sagas WHERE state NOT IN ('CONFIRMED','REFUSED','DECLINED','REFUNDED') "
+            + "AND updated_at < now() - make_interval(secs => ?) ORDER BY updated_at",
+        MAPPER,
+        age.toMillis() / 1000.0);
   }
 
   @Override

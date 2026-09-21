@@ -44,6 +44,40 @@ public class SagaConfig {
     return new PurchaseSaga(handler, gateway, log, hold.ttl());
   }
 
+  /**
+   * Finishes purchases whose driver died, on a schedule and not only at startup.
+   * Without this a crashed server left buyers mid-purchase until the next restart.
+   */
+  @Bean(destroyMethod = "shutdownNow")
+  java.util.concurrent.ScheduledExecutorService sagaReaper(
+      PurchaseSaga saga,
+      io.micrometer.core.instrument.MeterRegistry metrics,
+      @org.springframework.beans.factory.annotation.Value("${turnstile.saga.reaper.interval:PT30S}") java.time.Duration every,
+      @org.springframework.beans.factory.annotation.Value("${turnstile.saga.reaper.stale-after:PT1M}") java.time.Duration staleAfter) {
+    var reaper =
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+            r -> {
+              Thread t = new Thread(r, "saga-reaper");
+              t.setDaemon(true);
+              return t;
+            });
+    reaper.scheduleWithFixedDelay(
+        () -> {
+          try {
+            int recovered = saga.recoverStale(staleAfter).size();
+            if (recovered > 0) {
+              metrics.counter("turnstile.saga.recovered").increment(recovered);
+            }
+          } catch (RuntimeException e) {
+            org.slf4j.LoggerFactory.getLogger(SagaConfig.class).warn("saga reaper pass failed: {}", e.toString());
+          }
+        },
+        every.toMillis(),
+        every.toMillis(),
+        java.util.concurrent.TimeUnit.MILLISECONDS);
+    return reaper;
+  }
+
   /** On startup, finish purchases the last process was in the middle of. */
   @Bean
   ApplicationRunner recoverSagas(PurchaseSaga saga) {
