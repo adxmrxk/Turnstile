@@ -181,4 +181,22 @@ class ChainVerifierTest {
     assertThat(verifier.checkpoint().root()).as("a new event changes the digest").isNotEqualTo(before.root());
     assertThat(verifier.checkpoint().root()).as("and it is deterministic").isEqualTo(verifier.checkpoint().root());
   }
+
+  @Test
+  @DisplayName("a wrecked log reports the first problems and says how many more it left out")
+  void problem_list_is_capped() {
+    // 1,200 events with no hash at all: each is a problem.
+    jdbc.update(
+        "INSERT INTO events (stream_id, version, type, payload, occurred_at) "
+            + "SELECT 'wreck-' || g, 1, 'SeatHeld', '{}'::jsonb, now() FROM generate_series(1, 1200) g");
+
+    ChainVerifier.Report report = verifier.verify();
+
+    assertThat(report.intact()).isFalse();
+    assertThat(report.problems()).as("the cap plus one summary line").hasSize(ChainVerifier.MAX_PROBLEMS + 1);
+    assertThat(report.problems().get(ChainVerifier.MAX_PROBLEMS).what())
+        .as("the summary says what was left out")
+        .contains("200 further problems");
+    assertThat(report.events()).as("every event was still examined").isEqualTo(store.readAll().size());
+  }
 }

@@ -388,4 +388,38 @@ class Benchmarks {
       ctx.close();
     }
   }
+
+  // ---------------------------------------------------------------------------
+
+  /** Verifying the hash chain over a log too big to hold in memory. */
+  @Test
+  void verifyChainLargeLog() throws Exception {
+    TestPostgres.reset();
+    int events = Integer.getInteger("bench.events", 600_000);
+    JdbcTemplate jdbc = new JdbcTemplate(TestPostgres.dataSource());
+    // One event per seat, each with a genuinely valid hash, computed by the
+    // database exactly as the store does it, so the verifier has real work to do.
+    jdbc.update(
+        "WITH p AS (SELECT 'big-' || g AS s, jsonb_build_object('seatId', 'big-' || g, 'holdId', 'h' || g, "
+            + "'buyerId', 'b' || g, 'occurredAt', '2026-09-21T12:00:00Z', 'expiresAt', '2026-09-21T12:05:00Z') AS j "
+            + "FROM generate_series(1, ?) g) "
+            + "INSERT INTO events (stream_id, version, type, payload, occurred_at, prev_hash, hash) "
+            + "SELECT s, 1, 'SeatHeld', j, now(), repeat('0', 64), "
+            + "encode(sha256(convert_to(repeat('0', 64) || '|' || s || '|1|SeatHeld|' || j::text, 'UTF8')), 'hex') FROM p",
+        events);
+    var verifier = new dev.turnstile.eventstore.ChainVerifier(TestPostgres.pooled(4));
+
+    Runtime rt = Runtime.getRuntime();
+    System.gc();
+    long start = System.nanoTime();
+    String outcome;
+    try {
+      var report = verifier.verify();
+      outcome = "completed, " + report.events() + " events checked, intact=" + report.intact();
+    } catch (OutOfMemoryError oom) {
+      outcome = "OutOfMemoryError";
+    }
+    report("verifyChainLargeLog",
+        String.format("%,d events, max heap %d MB: %s in %.1fs", events, rt.maxMemory() / 1_000_000, outcome, (System.nanoTime() - start) / 1e9));
+  }
 }
