@@ -96,6 +96,7 @@ generator, the server and the database together, so read them as ratios.
 | Outbox rows kept after publishing (3,000 events) | 3,000, forever | 0 |
 | Messages re-read from Kafka after a restart | 3,000 (the whole topic) | 0 |
 | `GET /api/seats` with 20,000 seats, 32 readers | 51 reads/s, p50 615 ms | about 280 reads/s, p50 about 100 ms; an unchanged map is a 304 |
+| Verifying the hash chain over 600,000 events, 300 MB heap | OutOfMemoryError | completes in 3.7 s |
 | Purchases stranded by a crash | recovered only at restart | recovered by a scheduled reaper |
 | Metrics | none | store, purchase, projection, outbox, saga and pool metrics at `/actuator/prometheus` |
 
@@ -129,9 +130,11 @@ connection pool, which made appends look 80 times slower than they are.
 - **Substitutions:** a polling outbox relay instead of Debezium, a plain Kafka
   consumer instead of Kafka Streams, embedded Postgres and Kafka instead of
   Testcontainers.
-- The hash-chain verifier and the rush demo still load the whole log into memory;
-  only export, audit and rebuild stream. Kafka consumer groups are per process and
-  are never reused, so stale ones pile up on the broker until it expires them.
+- The rush demo still loads the whole log into memory (it is off in production).
+  Kafka consumer groups are per process and are never reused, so stale ones pile up
+  on the broker until it expires them. Turning off offset commits did not stop the
+  commits (the container kept committing despite auto-commit off and manual ack), and
+  the cause was not found, so that change was reverted.
 
 ## Build and test
 
