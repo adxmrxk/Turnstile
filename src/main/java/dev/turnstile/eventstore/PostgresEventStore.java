@@ -114,9 +114,13 @@ public final class PostgresEventStore implements EventStore {
       int claimed =
           jdbc.update(
               "INSERT INTO idempotency_keys (idempotency_key, stream_id, version) "
-                  + "VALUES (?, ?, -1) ON CONFLICT (idempotency_key) DO NOTHING",
+                  + "VALUES (?, ?, ?) ON CONFLICT (idempotency_key) DO NOTHING",
               idempotencyKey,
-              streamId);
+              streamId,
+              // The final version is known up front, so the key is written once and
+              // never updated. If this append fails, the transaction rolls back and
+              // takes the key with it, exactly as before.
+              expectedVersion + events.size());
       if (claimed == 0) {
         Long version =
             jdbc.queryForObject(
@@ -127,7 +131,13 @@ public final class PostgresEventStore implements EventStore {
       }
     }
 
-    long actual = currentVersion(streamId);
+    // One query for both the stream's current version and its head hash.
+    List<Object[]> head =
+        jdbc.query(
+            "SELECT version, hash FROM events WHERE stream_id = ? ORDER BY version DESC LIMIT 1",
+            (rs, i) -> new Object[] {rs.getLong(1), rs.getString(2)},
+            streamId);
+    long actual = head.isEmpty() ? 0 : (Long) head.get(0)[0];
     if (actual != expectedVersion) {
       throw new ConcurrencyConflictException(streamId, expectedVersion, actual);
     }
@@ -136,7 +146,9 @@ public final class PostgresEventStore implements EventStore {
     // inside the INSERT, over the payload as jsonb normalises it, because the
     // append-only trigger forbids filling it in with an UPDATE afterwards.
     // ChainVerifier recomputes the same value in Java, so the two agree or it shows.
-    String previousHash = lastHash(streamId);
+    String previousHash =
+        head.isEmpty() || head.get(0)[1] == null ? ChainVerifier.GENESIS : (String) head.get(0)[1];
+    List<Object[]> outboxRows = new java.util.ArrayList<>(events.size());
     long version = expectedVersion;
     for (DomainEvent event : events) {
       version++;
@@ -165,28 +177,18 @@ public final class PostgresEventStore implements EventStore {
       }
       previousHash = written[1];
 
-      jdbc.update(
-          "INSERT INTO outbox (event_key, stream_id, payload) VALUES (?, ?, ?::jsonb)",
-          streamId + ":" + version,
-          streamId,
-          codec.envelope(streamId, version, Long.parseLong(written[0]), event));
+      outboxRows.add(
+          new Object[] {
+            streamId + ":" + version,
+            streamId,
+            codec.envelope(streamId, version, Long.parseLong(written[0]), event)
+          });
     }
 
-    if (idempotencyKey != null) {
-      jdbc.update(
-          "UPDATE idempotency_keys SET version = ? WHERE idempotency_key = ?",
-          version,
-          idempotencyKey);
-    }
+    // All of this append's outbox rows in one round trip.
+    jdbc.batchUpdate(
+        "INSERT INTO outbox (event_key, stream_id, payload) VALUES (?, ?, ?::jsonb)", outboxRows);
     return new AppendResult(version, false);
-  }
-
-  /** Hash of the seat's newest event, or the genesis value for a seat with none. */
-  private String lastHash(String streamId) {
-    List<String> found =
-        jdbc.queryForList(
-            "SELECT hash FROM events WHERE stream_id = ? ORDER BY version DESC LIMIT 1", String.class, streamId);
-    return found.isEmpty() || found.get(0) == null ? ChainVerifier.GENESIS : found.get(0);
   }
 
   @Override
