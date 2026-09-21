@@ -49,6 +49,16 @@ public interface EventStore {
    */
   OptionalLong versionForIdempotencyKey(String idempotencyKey);
 
+  /**
+   * Visits every event in global order without holding the log in memory. The
+   * default falls back to {@link #readAll}; a durable store should stream. Export,
+   * audit and read-model rebuild use this, so their memory does not grow with the
+   * log.
+   */
+  default void forEachEvent(java.util.function.Consumer<StoredEvent> sink) {
+    readAll().forEach(sink);
+  }
+
   /** Every event across every stream in global order. Feeds projections and the verifier. */
   List<StoredEvent> readAll();
 

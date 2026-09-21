@@ -179,4 +179,18 @@ abstract class EventStoreContractTest {
     assertThat(result.newVersion()).isZero();
     assertThat(store.load("seat-1")).isEmpty();
   }
+
+  @Test
+  @DisplayName("streaming the log visits exactly what readAll returns, in the same order")
+  void for_each_event_matches_read_all() {
+    EventStore store = newStore();
+    store.append("seat-1", 0, List.of(held("seat-1", "h1")), null);
+    store.append("seat-2", 0, List.of(held("seat-2", "h2")), null);
+    store.append("seat-1", 1, List.of(held("seat-1", "h3")), null);
+
+    List<StoredEvent> streamed = new java.util.ArrayList<>();
+    store.forEachEvent(streamed::add);
+
+    assertThat(streamed).isNotEmpty().isEqualTo(store.readAll());
+  }
 }

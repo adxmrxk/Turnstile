@@ -64,6 +64,11 @@ public final class NotifyingEventStore implements EventStore {
   }
 
   @Override
+  public void forEachEvent(java.util.function.Consumer<StoredEvent> sink) {
+    delegate.forEachEvent(sink);
+  }
+
+  @Override
   public long currentVersion(String streamId) {
     return delegate.currentVersion(streamId);
   }

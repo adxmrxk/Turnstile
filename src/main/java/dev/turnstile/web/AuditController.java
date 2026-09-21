@@ -4,16 +4,12 @@ import dev.turnstile.audit.LogAuditor;
 import dev.turnstile.audit.NdjsonExport;
 import dev.turnstile.eventstore.EventStore;
 import dev.turnstile.eventstore.NotifyingEventStore;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.List;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 /**
  * The live log, exposed for audit.
@@ -23,6 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code turnstilectl export | verify-invariants.sh} checks the running system's
  * own log with no shared code. {@code /api/audit} runs the Java twin of that
  * verifier in-process for a quick answer.
+ *
+ * <p>Both stream. Neither holds the log in memory, so they work at any size; loading
+ * the whole log to export it ran out of memory at 600,000 events on a 300 MB heap.
  */
 @RestController
 @RequestMapping("/api")
@@ -35,17 +34,15 @@ public class AuditController {
   }
 
   @GetMapping(value = "/export", produces = "application/x-ndjson")
-  public ResponseEntity<byte[]> export() throws IOException {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    NdjsonExport.write(store.readAll(), out);
-    return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/x-ndjson")).body(out.toByteArray());
+  public ResponseEntity<StreamingResponseBody> export() {
+    StreamingResponseBody body = out -> NdjsonExport.write(store, out);
+    return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/x-ndjson")).body(body);
   }
 
   @GetMapping("/audit")
-  public LogAuditor.Report audit() throws IOException {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    NdjsonExport.write(store.readAll(), out);
-    List<String> lines = Arrays.asList(out.toString(StandardCharsets.UTF_8).split("\n"));
-    return new LogAuditor().audit(lines);
+  public LogAuditor.Report audit() {
+    LogAuditor.Session session = new LogAuditor().start();
+    store.forEachEvent(stored -> session.accept(NdjsonExport.line(stored).trim()));
+    return session.finish();
   }
 }

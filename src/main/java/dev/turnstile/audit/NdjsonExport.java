@@ -24,6 +24,21 @@ public final class NdjsonExport {
 
   private NdjsonExport() {}
 
+  /** Streams the whole log; memory does not grow with its size. */
+  public static void write(dev.turnstile.eventstore.EventStore store, OutputStream target) throws IOException {
+    BufferedWriter out =
+        new BufferedWriter(new OutputStreamWriter(target, StandardCharsets.UTF_8), 1 << 16);
+    store.forEachEvent(
+        stored -> {
+          try {
+            out.write(line(stored));
+          } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+          }
+        });
+    out.flush();
+  }
+
   public static void write(List<StoredEvent> log, OutputStream target) throws IOException {
     BufferedWriter out =
         new BufferedWriter(new OutputStreamWriter(target, StandardCharsets.UTF_8), 1 << 16);

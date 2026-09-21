@@ -191,6 +191,33 @@ public final class PostgresEventStore implements EventStore {
     return new AppendResult(version, false);
   }
 
+  /**
+   * Streams the log through a database cursor. PostgreSQL only uses a cursor
+   * inside a transaction with a fetch size set, which is why this is a read-only
+   * transaction and a dedicated template: without both, the driver quietly reads
+   * the whole result set into memory, which is the very thing this avoids.
+   */
+  @Override
+  public void forEachEvent(java.util.function.Consumer<StoredEvent> sink) {
+    JdbcTemplate streaming = new JdbcTemplate(jdbc.getDataSource());
+    streaming.setFetchSize(2_000);
+    TransactionTemplate readOnly = new TransactionTemplate(tx.getTransactionManager());
+    readOnly.setReadOnly(true);
+    readOnly.executeWithoutResult(
+        status ->
+            streaming.query(
+                "SELECT stream_id, version, global_seq, type, payload::text AS payload "
+                    + "FROM events ORDER BY global_seq",
+                (org.springframework.jdbc.core.RowCallbackHandler)
+                    rs ->
+                        sink.accept(
+                            new StoredEvent(
+                                rs.getString("stream_id"),
+                                rs.getLong("version"),
+                                rs.getLong("global_seq"),
+                                codec.fromJson(rs.getString("type"), rs.getString("payload"))))));
+  }
+
   @Override
   public List<StoredEvent> readAll() {
     return new ArrayList<>(

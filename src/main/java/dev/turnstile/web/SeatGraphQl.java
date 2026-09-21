@@ -85,10 +85,9 @@ public class SeatGraphQl {
   @QueryMapping
   public LogAuditor.Report audit() throws IOException {
     access.requireStaff();
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    NdjsonExport.write(store.readAll(), out);
-    List<String> lines = Arrays.asList(out.toString(StandardCharsets.UTF_8).split("\n"));
-    return new LogAuditor().audit(lines);
+    LogAuditor.Session session = new LogAuditor().start();
+    store.forEachEvent(stored -> session.accept(NdjsonExport.line(stored).trim()));
+    return session.finish();
   }
 
   @SchemaMapping(typeName = "Seat", field = "history")

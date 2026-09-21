@@ -24,6 +24,10 @@ import java.util.Set;
  *   <li>I2 every sale descends from a hold placed on that seat
  *   <li>I3 nothing happens to a seat after it is sold
  * </ul>
+ *
+ * <p>Lines can be fed one at a time through a {@link Session}, so a log of any
+ * size can be audited without holding it in memory. What a session does keep is
+ * proportional to the number of holds and sold seats, not to the number of lines.
  */
 public final class LogAuditor {
 
@@ -32,19 +36,20 @@ public final class LogAuditor {
 
   private static final ObjectMapper JSON = new ObjectMapper();
 
-  public Report audit(Iterable<String> ndjsonLines) {
-    Map<String, Long> soldAtLine = new HashMap<>();
-    Set<String> placedHolds = new HashSet<>();
-    Set<String> openHolds = new HashSet<>();
-    List<String> violations = new ArrayList<>();
-    long events = 0;
-    long line = 0;
-    long sold = 0;
+  /** An audit in progress. Feed it lines in log order, then {@link #finish}. */
+  public static final class Session {
+    private final Map<String, Long> soldAtLine = new HashMap<>();
+    private final Set<String> placedHolds = new HashSet<>();
+    private final Set<String> openHolds = new HashSet<>();
+    private final List<String> violations = new ArrayList<>();
+    private long events;
+    private long line;
+    private long sold;
 
-    for (String raw : ndjsonLines) {
+    public void accept(String raw) {
       line++;
       if (raw.isBlank()) {
-        continue;
+        return;
       }
       events++;
       String type;
@@ -57,11 +62,11 @@ public final class LogAuditor {
         hold = text(node, "holdId");
       } catch (Exception unparseable) {
         violations.add("E0 line " + line + ": unparseable event");
-        continue;
+        return;
       }
       if (type.isEmpty() || seat.isEmpty()) {
         violations.add("E0 line " + line + ": unparseable event");
-        continue;
+        return;
       }
 
       String pair = seat + "\u0000" + hold;
@@ -93,7 +98,22 @@ public final class LogAuditor {
         }
       }
     }
-    return new Report(events, sold, openHolds.size(), violations, violations.isEmpty());
+
+    public Report finish() {
+      return new Report(events, sold, openHolds.size(), violations, violations.isEmpty());
+    }
+  }
+
+  public Session start() {
+    return new Session();
+  }
+
+  public Report audit(Iterable<String> ndjsonLines) {
+    Session session = new Session();
+    for (String raw : ndjsonLines) {
+      session.accept(raw);
+    }
+    return session.finish();
   }
 
   private static String text(JsonNode node, String field) {
