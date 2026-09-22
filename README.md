@@ -131,10 +131,10 @@ connection pool, which made appends look 80 times slower than they are.
   consumer instead of Kafka Streams, embedded Postgres and Kafka instead of
   Testcontainers.
 - The rush demo still loads the whole log into memory (it is off in production).
-  Kafka consumer groups are per process and are never reused, so stale ones pile up
-  on the broker until it expires them. Turning off offset commits did not stop the
-  commits (the container kept committing despite auto-commit off and manual ack), and
-  the cause was not found, so that change was reverted.
+- Each server process has its own Kafka consumer group and deletes it on a clean
+  shutdown. A process that is killed leaves its group behind until Kafka expires it.
+  Stopping the offset commits was tried and did not work: the container kept
+  committing, and the cause was not found.
 
 ## Build and test
 
@@ -147,7 +147,7 @@ make prove       # simulate a contended sale and audit it
 ```
 
 ```
-Java   Tests run: 121, Failures: 0, Errors: 0, Skipped: 0
+Java   Tests run: 123, Failures: 0, Errors: 0, Skipped: 0
 Shell  all 38 shell assertions passed
 ```
 

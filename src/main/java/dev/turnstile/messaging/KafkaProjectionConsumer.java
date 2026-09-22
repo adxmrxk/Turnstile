@@ -57,6 +57,7 @@ public final class KafkaProjectionConsumer extends AbstractConsumerSeekAware {
    * expires them.
    */
   @KafkaListener(
+      id = SeatMapGroupCleanup.LISTENER_ID,
       topics = "${turnstile.kafka.topic:turnstile.seat-events}",
       // Pinned here, not left to the global setting. If nothing on a partition is newer
       // than the seek time there is no offset to seek to, and the consumer falls back to

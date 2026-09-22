@@ -106,6 +106,13 @@ public class MessagingConfig {
   }
 
   @Bean
+  dev.turnstile.messaging.SeatMapGroupCleanup seatMapGroupCleanup(
+      org.springframework.kafka.config.KafkaListenerEndpointRegistry registry,
+      org.springframework.kafka.core.KafkaAdmin admin) {
+    return new dev.turnstile.messaging.SeatMapGroupCleanup(registry, admin);
+  }
+
+  @Bean
   KafkaProjectionConsumer kafkaProjectionConsumer(
       SeatMapProjection projection,
       EventCodec codec,
